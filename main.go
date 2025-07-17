@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -11,9 +12,16 @@ import (
 	"time"
 
 	"JeffreyRichter.com/ToolSelection/mcp"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Load environment variables from .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		// .env file is optional, so we just log if it's not found
+		log.Printf("No .env file found or error loading it: %v", err)
+	}
+
 	listToolsResult := mcp.ListToolsResult{}
 	{
 		toolsListResultJson := string(must(os.ReadFile("list-tools.json")))
@@ -30,6 +38,8 @@ func main() {
 	tools2DB(db, listToolsResult.Tools)
 	fmt.Printf("Tool count=%d, Execution time=%v\n\n", len(listToolsResult.Tools), time.Since(start))
 
+	// Load prompts from JSON file
+	toolNameAndPrompts := loadPromptsFromJSON("prompts.json")
 	runPrompts(db, toolNameAndPrompts)
 }
 
@@ -63,13 +73,36 @@ func tools2DB(db *VectorDB, tools []mcp.Tool) {
 func createEmbeddings(input string) []float32 {
 	// Docs: https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#embeddings
 
-	const uri = "https://openai-shared.openai.azure.com/openai/deployments/text-embedding-3-large/embeddings?api-version=2023-05-15"
+	uri := os.Getenv("AOAI_ENDPOINT")
+	if uri == "" {
+		log.Fatalf("AOAI_ENDPOINT environment variable is required")
+	}
 	//const deploymentName = "text-embedding-3-large"
-	apiKey := string(must(os.ReadFile("api-key.txt")))
 
-	//dimensions := 1024
-	reqBody := fmt.Sprintf(`{ "input": [ "%s" ]	}`, input) //dimensions
-	req := must(http.NewRequest(http.MethodPost, uri, strings.NewReader(reqBody)))
+	// Check for environment variable first, then fall back to file
+	apiKey := os.Getenv("TEXT_EMBEDDING_API_KEY")
+	if apiKey == "" {
+		// Try to read from file as fallback
+		keyBytes, err := os.ReadFile("api-key.txt")
+		if err != nil {
+			log.Fatalf("API key not found. Please set TEXT_EMBEDDING_API_KEY environment variable or create api-key.txt file: %v", err)
+		}
+		apiKey = strings.TrimSpace(string(keyBytes))
+	}
+
+	// Create the request body using proper JSON marshaling to avoid escaping issues
+	requestBody := struct {
+		Input []string `json:"input"`
+	}{
+		Input: []string{input},
+	}
+
+	reqBodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Fatalf("Failed to marshal request body: %v", err)
+	}
+
+	req := must(http.NewRequest(http.MethodPost, uri, strings.NewReader(string(reqBodyBytes))))
 	req.Header.Add("api-key", apiKey)
 	req.Header.Add("Content-Type", "application/json")
 	response := must(http.DefaultClient.Do(req))
@@ -79,10 +112,26 @@ func createEmbeddings(input string) []float32 {
 			//Index     int       `json:"index"`
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
 	}{}
 	bytes := must(io.ReadAll(response.Body))
 	response.Body.Close()
+
 	must(0, json.Unmarshal(bytes, &embedResponse))
+
+	// Check for API errors
+	if embedResponse.Error != nil {
+		log.Fatalf("API error: %s - %s", embedResponse.Error.Type, embedResponse.Error.Message)
+	}
+
+	// Check if we have data
+	if len(embedResponse.Data) == 0 {
+		log.Fatalf("No embedding data returned from API. Response: %s", string(bytes))
+	}
+
 	return embedResponse.Data[0].Embedding
 }
 
@@ -112,4 +161,21 @@ func must[R any](r R, err error) R {
 		panic(err)
 	}
 	return r
+}
+
+// loadPromptsFromJSON loads the tool prompts from a JSON file.
+// The JSON structure should be: {"tool-name": ["prompt1", "prompt2", ...], ...}
+// This allows for easy modification of test prompts without recompiling the application.
+func loadPromptsFromJSON(filename string) map[string][]string {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		log.Fatalf("Failed to read prompts file %s: %v", filename, err)
+	}
+
+	var prompts map[string][]string
+	if err := json.Unmarshal(data, &prompts); err != nil {
+		log.Fatalf("Failed to parse prompts JSON from %s: %v", filename, err)
+	}
+
+	return prompts
 }
