@@ -15,6 +15,34 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// isMarkdownOutput checks if the output should be in markdown format
+// Only checks for output=md environment variable
+func isMarkdownOutput() bool {
+	return strings.ToLower(os.Getenv("output")) == "md"
+}
+
+// getAllTools returns the total number of tools in the database
+func getAllTools(db *VectorDB) int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return len(db.entries)
+}
+
+// calculateSuccessRate calculates how many tests passed (expected tool was ranked #1)
+func calculateSuccessRate(db *VectorDB, toolNameWithPrompts map[string][]string) int {
+	successfulTests := 0
+	for toolName, prompts := range toolNameWithPrompts {
+		for _, p := range prompts {
+			vector := createEmbeddings(p)
+			queryResults := db.Query(vector, QueryOptions{TopK: 1})
+			if len(queryResults) > 0 && string(queryResults[0].Entry.ID) == toolName {
+				successfulTests++
+			}
+		}
+	}
+	return successfulTests
+}
+
 func main() {
 	// Load environment variables from .env file if it exists
 	if err := godotenv.Load(); err != nil {
@@ -36,7 +64,26 @@ func main() {
 	db := NewVectorDB(CosineSimilarity{}, nil)
 	start := time.Now()
 	tools2DB(db, listToolsResult.Tools)
-	fmt.Printf("Tool count=%d, Execution time=%v\n\n", len(listToolsResult.Tools), time.Since(start))
+	toolCount := getAllTools(db)
+	executionTime := time.Since(start)
+
+	// Check if output should use markdown format
+	useMarkdown := isMarkdownOutput()
+
+	if useMarkdown {
+		// Markdown header for file output
+		fmt.Println("# Tool Selection Analysis Setup")
+		fmt.Println()
+		fmt.Printf("**Setup completed:** %s  \n", time.Now().Format("2006-01-02 15:04:05"))
+		fmt.Printf("**Tool count:** %d  \n", toolCount)
+		fmt.Printf("**Database setup time:** %v  \n", executionTime)
+		fmt.Println()
+		fmt.Println("---")
+		fmt.Println()
+	} else {
+		// Original terminal format
+		fmt.Printf("Tool count=%d, Execution time=%v\n\n", toolCount, executionTime)
+	}
 
 	// Load prompts from JSON file
 	toolNameAndPrompts := loadPromptsFromJSON("prompts.json")
@@ -138,22 +185,113 @@ func createEmbeddings(input string) []float32 {
 func runPrompts(db *VectorDB, toolNameWithPrompts map[string][]string) {
 	start := time.Now()
 	promptCount := 0
+
+	// Check if output should use markdown format
+	useMarkdown := isMarkdownOutput()
+
+	if useMarkdown {
+		// Output markdown format
+		fmt.Println("# Tool Selection Analysis Results")
+		fmt.Println()
+		fmt.Printf("**Analysis Date:** %s  \n", time.Now().Format("2006-01-02 15:04:05"))
+		fmt.Printf("**Total Tools:** %d  \n", getAllTools(db))
+		fmt.Println()
+		fmt.Println("## Table of Contents")
+		fmt.Println()
+
+		// Generate TOC
+		toolIndex := 1
+		for toolName, prompts := range toolNameWithPrompts {
+			for range prompts {
+				fmt.Printf("- [Test %d: %s](#test-%d)\n", toolIndex, toolName, toolIndex)
+				toolIndex++
+			}
+		}
+		fmt.Println()
+		fmt.Println("---")
+		fmt.Println()
+	}
+
+	testNumber := 1
 	for toolName, prompts := range toolNameWithPrompts {
 		for _, p := range prompts {
 			promptCount++
-			fmt.Printf("\nPrompt: %s\nExpected tool: %s", p, toolName)
+
+			if useMarkdown {
+				// Markdown format
+				fmt.Printf("## Test %d\n", testNumber)
+				fmt.Println()
+				fmt.Printf("**Expected Tool:** `%s`  \n", toolName)
+				fmt.Printf("**Prompt:** %s  \n", p)
+				fmt.Println()
+				fmt.Println("### Results")
+				fmt.Println()
+				fmt.Println("| Rank | Score | Tool | Status |")
+				fmt.Println("|------|-------|------|--------|")
+			} else {
+				// Original terminal format
+				fmt.Printf("\nPrompt: %s\nExpected tool: %s", p, toolName)
+			}
+
 			vector := createEmbeddings(p)
 			queryResults := db.Query(vector, QueryOptions{TopK: 10})
-			for _, qr := range queryResults {
-				note := ""
-				if string(qr.Entry.ID) == toolName {
-					note = "*** EXPECTED ***"
+
+			for i, qr := range queryResults {
+				if useMarkdown {
+					status := ""
+					if string(qr.Entry.ID) == toolName {
+						status = "✅ **EXPECTED**"
+					} else {
+						status = "❌"
+					}
+					fmt.Printf("| %d | %.6f | `%s` | %s |\n", i+1, qr.Score, qr.Entry.ID, status)
+				} else {
+					note := ""
+					if string(qr.Entry.ID) == toolName {
+						note = "*** EXPECTED ***"
+					}
+					fmt.Printf("\n   %f   %-50s     %s", qr.Score, qr.Entry.ID, note)
 				}
-				fmt.Printf("\n   %f   %-50s     %s", qr.Score, qr.Entry.ID, note)
 			}
+
+			if useMarkdown {
+				fmt.Println()
+				fmt.Println("---")
+				fmt.Println()
+			}
+
+			testNumber++
 		}
 	}
-	fmt.Printf("\n\nPrompt count=%d, Execution time=%v\n", promptCount, time.Since(start))
+
+	if useMarkdown {
+		fmt.Println("## Summary")
+		fmt.Println()
+		fmt.Printf("**Total Prompts Tested:** %d  \n", promptCount)
+		fmt.Printf("**Execution Time:** %v  \n", time.Since(start))
+		fmt.Println()
+
+		// Calculate success rate
+		successfulTests := calculateSuccessRate(db, toolNameWithPrompts)
+		successRate := float64(successfulTests) / float64(promptCount) * 100
+		fmt.Printf("**Success Rate:** %.1f%% (%d/%d tests passed)  \n", successRate, successfulTests, promptCount)
+		fmt.Println()
+
+		fmt.Println("### Success Rate Analysis")
+		fmt.Println()
+		if successRate >= 90 {
+			fmt.Println("🟢 **Excellent** - The tool selection system is performing very well.")
+		} else if successRate >= 75 {
+			fmt.Println("🟡 **Good** - The tool selection system is performing adequately but has room for improvement.")
+		} else if successRate >= 50 {
+			fmt.Println("🟠 **Fair** - The tool selection system needs significant improvement.")
+		} else {
+			fmt.Println("🔴 **Poor** - The tool selection system requires major improvements.")
+		}
+		fmt.Println()
+	} else {
+		fmt.Printf("\n\nPrompt count=%d, Execution time=%v\n", promptCount, time.Since(start))
+	}
 }
 
 func must[R any](r R, err error) R {

@@ -58,9 +58,51 @@ Create a file named `api-key.txt` in the project root with your API key.
 
 ## Running
 
+### Basic Usage
 ```bash
 go run .
 ```
+
+### Output Formats
+
+The application supports different output formats based on your needs:
+
+#### Plain Text Output (Default)
+For normal terminal use or when redirecting to `.txt` files:
+```bash
+go run .
+# or
+go run . > results.txt
+```
+
+#### Markdown Output (Documentation)
+To generate markdown format, set the `output` environment variable to `md`:
+
+```bash
+output=md go run . > analysis_results.md
+```
+
+#### Output Format Features
+
+**Plain Text (.txt or terminal):**
+- Compact, simple format
+- Minimal formatting for easy parsing
+- Original terminal-style output
+
+**Markdown (.md):**
+- 📊 **Structured layout** with headers and navigation
+- 📋 **Table of Contents** with clickable links
+- 📈 **Results tables** with visual indicators (✅/❌)
+- 📊 **Success rate analysis** with performance ratings
+- 🕐 **Execution timing** and statistics
+
+#### Sample Markdown Features:
+- **Visual status indicators**: ✅ for expected tools, ❌ for others
+- **Performance ratings**: 🟢 Excellent, 🟡 Good, 🟠 Fair, 🔴 Poor
+- **Professional tables** for easy analysis
+- **Clickable navigation** for large result sets
+
+See `MARKDOWN_OUTPUT.md` for detailed examples and features.
 
 ## Configuration Files
 
